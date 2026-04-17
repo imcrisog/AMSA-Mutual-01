@@ -1,4 +1,42 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+This is a [Next.js](https://nextjs.org) project.
+
+## MongoDB + Auth
+
+This app stores tournaments in **MongoDB Atlas** and uses **email + password** authentication.
+
+### Environment variables
+
+Create a `.env.local` file (not committed) with:
+
+```bash
+MONGODB_URI=...
+AUTH_SECRET=...
+DB_NAME=default
+```
+
+You can start from `.env.local.example`.
+
+### Dev
+
+```bash
+npm install
+npm run dev
+```
+
+### Routes
+
+- UI:
+  - `/login`, `/signup`
+  - `/tournaments` (requires session)
+- API:
+  - `POST /api/auth/signup`
+  - `POST /api/auth/login`
+  - `POST /api/auth/logout`
+  - `GET /api/auth/me`
+  - `GET/POST /api/tournaments`
+  - `GET/PATCH/DELETE /api/tournaments/:id`
+  - `GET/PUT /api/tournaments/:id/teams`
+  - `GET/PUT /api/tournaments/:id/draft`
 
 ## Getting Started
 
