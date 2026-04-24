@@ -138,14 +138,29 @@ export default function FutbolResumenPage() {
 
   const leagueStandings = draft.format !== "copa" ? standingsForLeague() : [];
   const groupsExist = !!draft.groups?.A || !!draft.groups?.B;
+
+  // Normalize stage for liga_grupos_playoffs.
+  // If older drafts don't have `stage`, infer it from stored data.
+  const ligaGPStage =
+    draft.format !== "liga_grupos_playoffs"
+      ? null
+      : (draft.stage ??
+          (draft.playoffsRounds
+            ? "playoffs"
+            : draft.groups?.A && draft.groups?.B
+              ? "groups"
+              : "league"));
+
   const canGenerateGroups =
     draft.format === "liga_grupos_playoffs" &&
+    ligaGPStage === "league" &&
     !!draft.leagueMatches &&
     allMatchesPlayed(draft.leagueMatches) &&
     !groupsExist;
 
   const canGeneratePlayoffs =
     draft.format === "liga_grupos_playoffs" &&
+    ligaGPStage === "groups" &&
     !!draft.groups?.A &&
     !!draft.groups?.B &&
     allMatchesPlayed(draft.groups.A.matches) &&
@@ -272,7 +287,7 @@ export default function FutbolResumenPage() {
           {draft.format !== "copa" && (
             <div className="mt-2 flex items-center justify-between gap-3">
               <div className="text-xs text-zinc-500 dark:text-white/60">
-                Ver tabla completa (Liga / Grupos).
+                Ver tabla completa.
               </div>
               <button
                 type="button"
@@ -464,8 +479,9 @@ export default function FutbolResumenPage() {
           {/* ---------------- LIGA -> GRUPOS -> PLAYOFFS ---------------- */}
           {draft.format === "liga_grupos_playoffs" && draft.leagueMatches && (
             <div className="mt-4 space-y-8">
-              <section>
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              {ligaGPStage === "league" && (
+                <section>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <div className="font-semibold">Fase 1 — Liga</div>
                     <div className="text-sm text-zinc-600 dark:text-zinc-400">
@@ -478,10 +494,7 @@ export default function FutbolResumenPage() {
                     disabled={!canGenerateGroups}
                     onClick={() => {
                       if (!draft.leagueMatches) return;
-                      const standings = computeStandings(
-                        draft.teams.map((t) => t.name),
-                        draft.leagueMatches
-                      );
+                      const standings = leagueStandings;
                       const split = splitIntoGroupsFromStandings(standings);
                       const groups = generateGroupPhase(split);
                       persist({ ...draft, stage: "groups", groups });
@@ -489,9 +502,9 @@ export default function FutbolResumenPage() {
                   >
                     Generar grupos
                   </button>
-                </div>
+                  </div>
 
-                <div className="mt-4 space-y-6">
+                  <div className="mt-4 space-y-6">
                   {Array.from(new Set((draft.leagueMatches ?? []).map((m) => m.round))).map((round) => (
                     <div key={round}>
                       <div className="font-semibold">Fecha {round}</div>
@@ -572,15 +585,16 @@ export default function FutbolResumenPage() {
                       </ul>
                     </div>
                   ))}
-                </div>
+                  </div>
 
-                <div className="mt-6">
-                  <div className="font-semibold">Tabla general</div>
-                  <StandingsTable rows={leagueStandings} />
-                </div>
-              </section>
+                  <div className="mt-6">
+                    <div className="font-semibold">Tabla general</div>
+                    <StandingsTable rows={leagueStandings} />
+                  </div>
+                </section>
+              )}
 
-              {draft.groups?.A && draft.groups?.B && (
+              {ligaGPStage === "groups" && draft.groups?.A && draft.groups?.B && (
                 <section className="space-y-6">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
@@ -677,7 +691,7 @@ export default function FutbolResumenPage() {
                 </section>
               )}
 
-              {draft.playoffsRounds && (
+              {(ligaGPStage === "playoffs" || ligaGPStage === "finished") && draft.playoffsRounds && (
                 <section className="space-y-4">
                   <div>
                     <div className="font-semibold">Fase 3 — Playoffs</div>
@@ -796,8 +810,8 @@ export default function FutbolResumenPage() {
             </div>
           )}
 
-          {/* ---------------- LIGA -> GRUPOS -> PLAYOFFS (starting directly in groups via sorteo) ---------------- */}
-          {draft.format === "liga_grupos_playoffs" && !draft.leagueMatches && draft.groups?.A && draft.groups?.B && (
+          {/* ---------------- LIGA -> GRUPOS -> PLAYOFFS (legacy: starting directly in groups via sorteo) ---------------- */}
+          {draft.format === "liga_grupos_playoffs" && ligaGPStage === "groups" && !draft.leagueMatches && draft.groups?.A && draft.groups?.B && (
             <div className="mt-4 space-y-8">
               <section className="space-y-6">
                 <div>
@@ -920,29 +934,42 @@ export default function FutbolResumenPage() {
                 <div className="text-sm text-zinc-600 dark:text-white/70">En Copa no hay tabla.</div>
               ) : draft.format === "liga" ? (
                 <StandingsTable rows={leagueStandings} />
-              ) : (
+              ) : draft.format === "liga_grupos_playoffs" ? (
                 <div className="space-y-6">
-                  {draft.leagueMatches && (
+                  {/*
+                    IMPORTANT: For liga_grupos_playoffs we only show ONE stage at a time.
+                    - stage=league  => league table
+                    - stage=groups  => group tables
+                    - stage=playoffs/finished => no standings table (playoffs are bracket-based)
+                  */}
+                  {ligaGPStage === "league" && draft.leagueMatches && (
                     <div>
-                      <div className="text-sm font-extrabold">Tabla general</div>
+                      <div className="text-sm font-extrabold">Fase 1 — Liga (tabla general)</div>
                       <StandingsTable rows={leagueStandings} />
                     </div>
                   )}
 
-                  {draft.groups?.A && (
-                    <div>
-                      <div className="text-sm font-extrabold">Grupo A</div>
-                      <StandingsTable rows={standingsForGroup("A")} />
-                    </div>
+                  {ligaGPStage === "groups" && draft.groups?.A && draft.groups?.B && (
+                    <>
+                      <div>
+                        <div className="text-sm font-extrabold">Fase 2 — Grupo A</div>
+                        <StandingsTable rows={standingsForGroup("A")} />
+                      </div>
+                      <div>
+                        <div className="text-sm font-extrabold">Fase 2 — Grupo B</div>
+                        <StandingsTable rows={standingsForGroup("B")} />
+                      </div>
+                    </>
                   )}
 
-                  {draft.groups?.B && (
-                    <div>
-                      <div className="text-sm font-extrabold">Grupo B</div>
-                      <StandingsTable rows={standingsForGroup("B")} />
+                  {(ligaGPStage === "playoffs" || ligaGPStage === "finished") && (
+                    <div className="text-sm text-zinc-600 dark:text-white/70">
+                      En Playoffs no hay tabla.
                     </div>
                   )}
                 </div>
+              ) : (
+                <div className="text-sm text-zinc-600 dark:text-white/70">Sin tabla para este formato.</div>
               )}
             </div>
           </div>

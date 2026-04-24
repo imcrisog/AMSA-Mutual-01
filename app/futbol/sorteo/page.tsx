@@ -3,11 +3,11 @@
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import type { CupRound, GroupPhase, GroupKey, Team, TournamentDraft, TournamentFormat } from "@/types/tournament";
+import type { CupRound, Team, TournamentDraft, TournamentFormat } from "@/types/tournament";
 import { getActiveTournamentId } from "@/lib/storage";
 import { apiGetDraft, apiGetNistPulse, apiGetTeams, apiSetDraft, apiSetTeams } from "@/lib/tournamentsApi";
 import { mulberry32, seed32FromHex, shuffleInPlace } from "@/lib/shuffle";
-import { generateCupRounds, generateGroupPhase, generateLeagueMatches } from "@/lib/tournament";
+import { generateCupRounds, generateLeagueMatches } from "@/lib/tournament";
 import { useRequireAuth } from "@/lib/authRequired";
 import FutbolShell from "../_components/FutbolShell";
 import FutbolCard from "../_components/FutbolCard";
@@ -20,15 +20,6 @@ type DrawnPair = { home: string; away: string };
 function formatPair(pair: DrawnPair) {
   const isGroup = pair.away.startsWith("Grupo");
   return isGroup ? `${pair.home} → ${pair.away}` : `${pair.home} vs ${pair.away}`;
-}
-
-function splitIntoRandomGroups(teamNames: string[]): Record<GroupKey, string[]> {
-  const A: string[] = [];
-  const B: string[] = [];
-  teamNames.forEach((t, idx) => {
-    (idx % 2 === 0 ? A : B).push(t);
-  });
-  return { A, B };
 }
 
 function isValidDraft(d: TournamentDraft | null): d is TournamentDraft {
@@ -119,7 +110,6 @@ export default function FutbolSorteoPage() {
   const [format, setFormat] = useState<TournamentFormat | null>(null);
   const [ordered, setOrdered] = useState<Team[] | null>(null);
   const [cupRounds, setCupRounds] = useState<CupRound[] | null>(null);
-  const [groups, setGroups] = useState<Record<GroupKey, GroupPhase> | null>(null);
   const [drawnPairs, setDrawnPairs] = useState<DrawnPair[]>([]);
   const [pendingPairs, setPendingPairs] = useState<DrawnPair[]>([]);
   const [spin, setSpin] = useState<SpinState>("idle");
@@ -267,7 +257,6 @@ export default function FutbolSorteoPage() {
     setSpin("spinning");
     setOrdered(null);
     setCupRounds(null);
-    setGroups(null);
     setDrawnPairs([]);
     setPendingPairs([]);
 
@@ -326,7 +315,6 @@ export default function FutbolSorteoPage() {
 
       let nextDraft: TournamentDraft;
       let nextCupRounds: CupRound[] | null = null;
-      let nextGroups: Record<GroupKey, GroupPhase> | null = null;
       let revealPairs: DrawnPair[] = [];
 
       if (format === "copa") {
@@ -335,12 +323,16 @@ export default function FutbolSorteoPage() {
         revealPairs = (nextCupRounds[0]?.matches ?? []).map((m) => ({ home: m.home, away: m.away }));
         nextDraft = { sport: "futbol", teams: next, format, randomnessProof: proof, cupRounds: nextCupRounds };
       } else if (format === "liga_grupos_playoffs") {
-        // Randomly assign teams to groups A/B and generate matches.
-        const split = splitIntoRandomGroups(nextNames);
-        nextGroups = generateGroupPhase(split);
-        // reveal group assignments as “pairs” (Team → Grupo X)
-        revealPairs = nextNames.map((name) => ({ home: name, away: split.A.includes(name) ? "Grupo A" : "Grupo B" }));
-        nextDraft = { sport: "futbol", teams: next, format, randomnessProof: proof, stage: "groups", groups: nextGroups };
+        // Respect stages: start with League (all vs all). Groups/Playoffs are generated later in Resumen.
+        revealPairs = nextNames.map((name, idx) => ({ home: String(idx + 1), away: name }));
+        nextDraft = {
+          sport: "futbol",
+          teams: next,
+          format,
+          randomnessProof: proof,
+          stage: "league",
+          leagueMatches: generateLeagueMatches(next),
+        };
       } else {
         // Liga: order affects the fixture too.
         revealPairs = nextNames.map((name, idx) => ({ home: String(idx + 1), away: name }));
@@ -368,7 +360,6 @@ export default function FutbolSorteoPage() {
 
         // 3) update UI previews
         if (nextCupRounds) setCupRounds(nextCupRounds);
-        if (nextGroups) setGroups(nextGroups);
         setRandomnessProof(proof);
         setSpin("done");
 
@@ -427,7 +418,7 @@ export default function FutbolSorteoPage() {
             format === "copa"
               ? "Se sortean todos los cruces del cuadro."
               : format === "liga_grupos_playoffs"
-                ? "Se sortean los grupos A/B y sus enfrentamientos."
+                ? "Se sortea el orden para la Liga (todos contra todos)."
                 : "Se sortea el orden y se genera el fixture."
           }
           right={
@@ -484,7 +475,7 @@ export default function FutbolSorteoPage() {
           {drawnPairs.length > 0 && (
             <div className="mt-4 space-y-2">
               <div className="text-xs font-semibold uppercase tracking-widest text-zinc-500 dark:text-white/50">
-                {format === "copa" ? "Cruces sorteados" : format === "liga_grupos_playoffs" ? "Grupos sorteados" : "Orden"}
+                {format === "copa" ? "Cruces sorteados" : "Orden"}
               </div>
               <ul className="space-y-2">
                 {drawnPairs.map((p, idx) => (
@@ -570,9 +561,9 @@ export default function FutbolSorteoPage() {
                 ? "Cuadro (completo)"
                 : "Cuadro"
               : format === "liga_grupos_playoffs"
-                ? groups
-                  ? "Grupos"
-                  : "Grupos"
+                ? ordered
+                  ? "Orden sorteado"
+                  : "Equipos"
                 : ordered
                   ? "Orden sorteado"
                   : "Equipos"
@@ -581,7 +572,9 @@ export default function FutbolSorteoPage() {
             format === "copa"
               ? "Se muestran todos los cruces del cuadro."
               : format === "liga_grupos_playoffs"
-                ? "Asignación a grupos A/B y sus partidos."
+                ? ordered
+                  ? "Así quedó el orden de la Liga."
+                  : "Se usará para el sorteo."
                 : ordered
                   ? "Así quedó el orden."
                   : "Se usará para el sorteo."
@@ -596,19 +589,6 @@ export default function FutbolSorteoPage() {
               )}
               <CupBracket rounds={cupRounds} revealMode={revealMode} revealedPairKeySet={revealedPairKeySet} />
             </>
-          ) : format === "liga_grupos_playoffs" && groups ? (
-            <div className="mt-2 grid gap-4 sm:grid-cols-2">
-              {(Object.keys(groups) as GroupKey[]).map((k) => (
-                <div key={k} className="rounded-2xl border border-zinc-200 bg-white/70 p-4 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/5">
-                  <div className="text-sm font-extrabold">Grupo {k}</div>
-                  <ul className="mt-2 space-y-1 text-sm text-zinc-700 dark:text-zinc-300">
-                    {groups[k].teams.map((name) => (
-                      <li key={name}>{name}</li>
-                    ))}
-                  </ul>
-                </div>
-              ))}
-            </div>
           ) : (
             <ul className="mt-2 space-y-2">
               {(ordered ?? teams).map((t, idx) => (

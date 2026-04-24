@@ -174,7 +174,7 @@ export default function FutbolFormatoPage() {
             )}
             {format === "liga_grupos_playoffs" && (
               <p>
-                <strong>Liga → Grupos → Playoffs:</strong> se sortean los grupos A/B y se generan sus partidos.
+                <strong>Liga → Grupos → Playoffs:</strong> se sortea el orden para la Liga (todos contra todos). Luego, al terminar la Liga se arma Grupo A (top 8) y Grupo B (resto), y recién después se generan los Playoffs.
               </p>
             )}
           </div>
