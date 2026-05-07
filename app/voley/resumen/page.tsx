@@ -7,11 +7,12 @@ import type { CupRound, GroupKey, Match, StandingsRow, Team, TournamentDraft } f
 import { getActiveTournamentId } from "@/lib/storage";
 import { apiGetTeams, apiGetDraft, apiSetDraft } from "@/lib/tournamentsApi";
 import { useRequireAuth } from "@/lib/authRequired";
-import FutbolShell from "../_components/FutbolShell";
-import FutbolCard from "../_components/FutbolCard";
+import VoleyShell from "../_components/VoleyShell";
+import VoleyCard from "../_components/VoleyCard";
 import MatchEventsEditor from "../_components/MatchEventsEditor";
 import {
   allMatchesPlayed,
+  applyAttendanceBonus,
   computeStandings,
   generateGroupPhase,
   generatePlayoffsFromGroups,
@@ -19,7 +20,7 @@ import {
   splitIntoGroupsFromStandings,
 } from "@/lib/tournament";
 
-export default function FutbolResumenPage() {
+export default function VoleyResumenPage() {
   const router = useRouter();
   const [draft, setDraft] = useState<TournamentDraft | null>(null);
   const { loading } = useRequireAuth();
@@ -27,7 +28,6 @@ export default function FutbolResumenPage() {
   const [standingsModalOpen, setStandingsModalOpen] = useState(false);
 
   useEffect(() => {
-    // ensure stable tournamentId across renders
     Promise.resolve().then(() => setTournamentId(getActiveTournamentId()));
   }, []);
 
@@ -101,54 +101,44 @@ export default function FutbolResumenPage() {
     if (m.homeScore == null || m.awayScore == null) return null;
     if (m.homeScore > m.awayScore) return m.home;
     if (m.awayScore > m.homeScore) return m.away;
-    return null; // tie
+    return null;
   }
 
   function standingsForLeague(): StandingsRow[] {
     if (!draft?.leagueMatches) return [];
     const teamNames = draft.teams.map((t) => t.name);
-    return computeStandings(teamNames, draft.leagueMatches);
+    return applyAttendanceBonus(computeStandings(teamNames, draft.leagueMatches), draft.attendanceConfirmed);
   }
 
   function standingsForGroup(key: GroupKey): StandingsRow[] {
     if (!draft?.groups?.[key]) return [];
     const group = draft.groups[key];
-    return computeStandings(group.teams, group.matches);
+    return applyAttendanceBonus(computeStandings(group.teams, group.matches), draft.attendanceConfirmed);
   }
 
   if (!draft) {
     return (
-      <FutbolShell
-        step="resumen"
-        title="Resumen"
-        subtitle="No hay un torneo en borrador. Volvé a crear equipos."
-      >
-        <FutbolCard title="Sin borrador" subtitle="No encontramos un torneo guardado en este navegador.">
+      <VoleyShell step="resumen" title="Resumen" subtitle="No hay un torneo en borrador. Volvé a crear equipos.">
+        <VoleyCard title="Sin borrador" subtitle="No encontramos un torneo guardado en este navegador.">
           <button
-            className="mt-2 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-500 px-4 py-2.5 text-sm font-extrabold tracking-wide text-black shadow-sm"
-            onClick={() => router.push("/futbol")}
+            className="mt-2 rounded-xl bg-gradient-to-r from-sky-600 to-blue-600 px-4 py-2.5 text-sm font-extrabold tracking-wide text-white shadow-sm"
+            onClick={() => router.push("/voley")}
           >
-            ← Ir a fútbol
+            ← Ir a vóley
           </button>
-        </FutbolCard>
-      </FutbolShell>
+        </VoleyCard>
+      </VoleyShell>
     );
   }
 
   const leagueStandings = draft.format !== "copa" ? standingsForLeague() : [];
   const groupsExist = !!draft.groups?.A || !!draft.groups?.B;
 
-  // Normalize stage for liga_grupos_playoffs.
-  // If older drafts don't have `stage`, infer it from stored data.
   const ligaGPStage =
     draft.format !== "liga_grupos_playoffs"
       ? null
       : (draft.stage ??
-          (draft.playoffsRounds
-            ? "playoffs"
-            : draft.groups?.A && draft.groups?.B
-              ? "groups"
-              : "league"));
+          (draft.playoffsRounds ? "playoffs" : draft.groups?.A && draft.groups?.B ? "groups" : "league"));
 
   const canGenerateGroups =
     draft.format === "liga_grupos_playoffs" &&
@@ -166,19 +156,13 @@ export default function FutbolResumenPage() {
     allMatchesPlayed(draft.groups.B.matches) &&
     !draft.playoffsRounds;
 
-  const playoffsAllMatches: Match[] = draft.playoffsRounds
-    ? draft.playoffsRounds.flatMap((r) => r.matches)
-    : [];
+  const playoffsAllMatches: Match[] = draft.playoffsRounds ? draft.playoffsRounds.flatMap((r) => r.matches) : [];
   const playoffsById = new Map(playoffsAllMatches.map((m) => [m.id, m] as const));
   const finalMatch = draft.playoffsRounds?.find((r) => r.name === "Final")?.matches?.[0];
   const champion = finalMatch ? matchWinner(finalMatch) : null;
 
   return (
-    <FutbolShell
-      step="resumen"
-      title="Resumen del torneo"
-      subtitle={`Deporte: Fútbol — Formato: ${draft.format ?? "-"}`}
-    >
+    <VoleyShell step="resumen" title="Resumen del torneo" subtitle={`Deporte: Vóley — Formato: ${draft.format ?? "-"}`}>
       {draft.format === "liga_grupos_playoffs" && champion && (
         <div className="mb-6 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-900 shadow-sm dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-100">
           <div className="font-extrabold tracking-tight">🏆 Campeón: {champion}</div>
@@ -186,7 +170,7 @@ export default function FutbolResumenPage() {
       )}
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <FutbolCard
+        <VoleyCard
           title="Equipos"
           subtitle="Planteles y escudos/fotos (si cargaste)."
           right={
@@ -218,12 +202,40 @@ export default function FutbolResumenPage() {
 
                   <div>
                     <div className="font-semibold">{t.name}</div>
-                    <div className="text-sm text-zinc-600 dark:text-white/70">
-                      Jugadores: {t.players.length}
-                    </div>
+                    <div className="text-sm text-zinc-600 dark:text-white/70">Jugadores: {t.players.length}</div>
                   </div>
 
-                  {/* En Fútbol se deshabilita el bonus de +5 (asistencia). */}
+                  <div className="ml-auto flex flex-col items-end gap-2">
+                    <div
+                      className={
+                        "rounded-full px-3 py-1 text-[11px] font-semibold " +
+                        (draft.attendanceConfirmed?.[t.name]
+                          ? "bg-emerald-100 text-emerald-900 dark:bg-emerald-500/15 dark:text-emerald-200"
+                          : "bg-zinc-100 text-zinc-700 dark:bg-white/10 dark:text-white/70")
+                      }
+                    >
+                      {draft.attendanceConfirmed?.[t.name] ? "+5 asistencia" : "sin bonus"}
+                    </div>
+
+                    <button
+                      type="button"
+                      className={
+                        "rounded-lg px-3 py-2 text-xs font-semibold shadow-sm " +
+                        (draft.attendanceConfirmed?.[t.name]
+                          ? "bg-zinc-200 text-zinc-700 dark:bg-white/10 dark:text-white/70"
+                          : "bg-black text-white dark:bg-white dark:text-black")
+                      }
+                      onClick={() => {
+                        const next = {
+                          ...(draft.attendanceConfirmed ?? {}),
+                          [t.name]: !draft.attendanceConfirmed?.[t.name],
+                        };
+                        persist({ ...draft, attendanceConfirmed: next });
+                      }}
+                    >
+                      {draft.attendanceConfirmed?.[t.name] ? "Quitar asistencia" : "Confirmar asistencia (+5)"}
+                    </button>
+                  </div>
                 </div>
 
                 <ul className="mt-3 space-y-1 text-sm text-zinc-700 dark:text-white/70">
@@ -236,24 +248,20 @@ export default function FutbolResumenPage() {
               </div>
             ))}
           </div>
-        </FutbolCard>
+        </VoleyCard>
 
-        <FutbolCard
+        <VoleyCard
           title="Estructura"
           subtitle="Fixture + resultados + tablas."
           right={
-            <div className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800 shadow-sm dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
+            <div className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-semibold text-sky-800 shadow-sm dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-200">
               Matchday
             </div>
           }
         >
-
-          {/* Quick access: full standings in a modal */}
           {draft.format !== "copa" && (
             <div className="mt-2 flex items-center justify-between gap-3">
-              <div className="text-xs text-zinc-500 dark:text-white/60">
-                Ver tabla completa.
-              </div>
+              <div className="text-xs text-zinc-500 dark:text-white/60">Ver tabla completa.</div>
               <button
                 type="button"
                 className="rounded-lg border border-zinc-200 bg-white/70 px-3 py-2 text-xs font-semibold shadow-sm backdrop-blur hover:bg-white dark:border-white/10 dark:bg-white/5 dark:hover:bg-white/10"
@@ -321,9 +329,7 @@ export default function FutbolResumenPage() {
                                         }}
                                       />
                                       {hasGoalEvents && (
-                                        <span className="text-xs text-zinc-500 dark:text-white/60">
-                                          (Marcador desde goles)
-                                        </span>
+                                        <span className="text-xs text-zinc-500 dark:text-white/60">(Marcador desde goles)</span>
                                       )}
                                     </div>
 
@@ -359,7 +365,6 @@ export default function FutbolResumenPage() {
               </div>
             </div>
           )}
-
 
           {/* ---------------- COPA ---------------- */}
           {draft.format === "copa" && draft.cupRounds && (
@@ -447,109 +452,107 @@ export default function FutbolResumenPage() {
               {ligaGPStage === "league" && (
                 <section>
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <div className="font-semibold">Fase 1 — Liga</div>
-                    <div className="text-sm text-zinc-600 dark:text-zinc-400">
-                      Cuando estén todos los resultados, se arman grupos A (top 8) y B (resto).
+                    <div>
+                      <div className="font-semibold">Fase 1 — Liga</div>
+                      <div className="text-sm text-zinc-600 dark:text-zinc-400">
+                        Cuando estén todos los resultados, se arman grupos A (top 8) y B (resto).
+                      </div>
                     </div>
-                  </div>
 
-                  <button
-                    className="rounded-lg bg-black px-4 py-2 text-sm text-white disabled:opacity-40 dark:bg-white dark:text-black"
-                    disabled={!canGenerateGroups}
-                    onClick={() => {
-                      if (!draft.leagueMatches) return;
-                      const standings = leagueStandings;
-                      const split = splitIntoGroupsFromStandings(standings);
-                      const groups = generateGroupPhase(split);
-                      persist({ ...draft, stage: "groups", groups });
-                    }}
-                  >
-                    Generar grupos
-                  </button>
+                    <button
+                      className="rounded-lg bg-black px-4 py-2 text-sm text-white disabled:opacity-40 dark:bg-white dark:text-black"
+                      disabled={!canGenerateGroups}
+                      onClick={() => {
+                        if (!draft.leagueMatches) return;
+                        const standings = leagueStandings;
+                        const split = splitIntoGroupsFromStandings(standings);
+                        const groups = generateGroupPhase(split);
+                        persist({ ...draft, stage: "groups", groups });
+                      }}
+                    >
+                      Generar grupos
+                    </button>
                   </div>
 
                   <div className="mt-4 space-y-6">
-                  {Array.from(new Set((draft.leagueMatches ?? []).map((m) => m.round))).map((round) => (
-                    <div key={round}>
-                      <div className="font-semibold">Fecha {round}</div>
-                      <ul className="mt-2 space-y-2 text-sm text-zinc-700 dark:text-zinc-300">
-                        {(draft.leagueMatches ?? [])
-                          .filter((m) => m.round === round)
-                          .map((m) => (
-                            <li
-                              key={m.id}
-                              className="rounded-xl border border-white/60 bg-white/70 p-3 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/5"
-                            >
-                              {(() => {
-                                const hasGoalEvents = (m.events ?? []).some((e) => e.type === "goal");
-                                return (
-                                  <>
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <span className="min-w-[220px] font-medium">
-                                        {m.home} vs {m.away}
-                                      </span>
-                                      <input
-                                        className="w-16 rounded border border-zinc-300 bg-transparent px-2 py-1 disabled:opacity-50 dark:border-zinc-700"
-                                        inputMode="numeric"
-                                        disabled={hasGoalEvents}
-                                        value={m.homeScore ?? ""}
-                                        onChange={(e) => {
-                                          const next = parseScore(e.target.value);
-                                          persist({
-                                            ...draft,
-                                            leagueMatches: updateMatchScoreInMatches(draft.leagueMatches ?? [], m.id, {
-                                              homeScore: next,
-                                            }),
-                                          });
-                                        }}
-                                      />
-                                      <span>-</span>
-                                      <input
-                                        className="w-16 rounded border border-zinc-300 bg-transparent px-2 py-1 disabled:opacity-50 dark:border-zinc-700"
-                                        inputMode="numeric"
-                                        disabled={hasGoalEvents}
-                                        value={m.awayScore ?? ""}
-                                        onChange={(e) => {
-                                          const next = parseScore(e.target.value);
-                                          persist({
-                                            ...draft,
-                                            leagueMatches: updateMatchScoreInMatches(draft.leagueMatches ?? [], m.id, {
-                                              awayScore: next,
-                                            }),
-                                          });
-                                        }}
-                                      />
-                                      {hasGoalEvents && (
-                                        <span className="text-xs text-zinc-500 dark:text-white/60">
-                                          (Marcador desde goles)
+                    {Array.from(new Set((draft.leagueMatches ?? []).map((m) => m.round))).map((round) => (
+                      <div key={round}>
+                        <div className="font-semibold">Fecha {round}</div>
+                        <ul className="mt-2 space-y-2 text-sm text-zinc-700 dark:text-zinc-300">
+                          {(draft.leagueMatches ?? [])
+                            .filter((m) => m.round === round)
+                            .map((m) => (
+                              <li
+                                key={m.id}
+                                className="rounded-xl border border-white/60 bg-white/70 p-3 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/5"
+                              >
+                                {(() => {
+                                  const hasGoalEvents = (m.events ?? []).some((e) => e.type === "goal");
+                                  return (
+                                    <>
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span className="min-w-[220px] font-medium">
+                                          {m.home} vs {m.away}
                                         </span>
-                                      )}
-                                    </div>
+                                        <input
+                                          className="w-16 rounded border border-zinc-300 bg-transparent px-2 py-1 disabled:opacity-50 dark:border-zinc-700"
+                                          inputMode="numeric"
+                                          disabled={hasGoalEvents}
+                                          value={m.homeScore ?? ""}
+                                          onChange={(e) => {
+                                            const next = parseScore(e.target.value);
+                                            persist({
+                                              ...draft,
+                                              leagueMatches: updateMatchScoreInMatches(draft.leagueMatches ?? [], m.id, {
+                                                homeScore: next,
+                                              }),
+                                            });
+                                          }}
+                                        />
+                                        <span>-</span>
+                                        <input
+                                          className="w-16 rounded border border-zinc-300 bg-transparent px-2 py-1 disabled:opacity-50 dark:border-zinc-700"
+                                          inputMode="numeric"
+                                          disabled={hasGoalEvents}
+                                          value={m.awayScore ?? ""}
+                                          onChange={(e) => {
+                                            const next = parseScore(e.target.value);
+                                            persist({
+                                              ...draft,
+                                              leagueMatches: updateMatchScoreInMatches(draft.leagueMatches ?? [], m.id, {
+                                                awayScore: next,
+                                              }),
+                                            });
+                                          }}
+                                        />
+                                        {hasGoalEvents && (
+                                          <span className="text-xs text-zinc-500 dark:text-white/60">(Marcador desde goles)</span>
+                                        )}
+                                      </div>
 
-                                    <details className="mt-2">
-                                      <summary className="cursor-pointer text-xs font-semibold text-zinc-600 dark:text-white/70">
-                                        Eventos (goles, tarjetas, cambios)
-                                      </summary>
-                                      <MatchEventsEditor
-                                        match={m}
-                                        teams={draft.teams}
-                                        onChange={(nextMatch) => {
-                                          persist({
-                                            ...draft,
-                                            leagueMatches: replaceMatchInMatches(draft.leagueMatches ?? [], m.id, nextMatch),
-                                          });
-                                        }}
-                                      />
-                                    </details>
-                                  </>
-                                );
-                              })()}
-                            </li>
-                          ))}
-                      </ul>
-                    </div>
-                  ))}
+                                      <details className="mt-2">
+                                        <summary className="cursor-pointer text-xs font-semibold text-zinc-600 dark:text-white/70">
+                                          Eventos (goles, tarjetas, cambios)
+                                        </summary>
+                                        <MatchEventsEditor
+                                          match={m}
+                                          teams={draft.teams}
+                                          onChange={(nextMatch) => {
+                                            persist({
+                                              ...draft,
+                                              leagueMatches: replaceMatchInMatches(draft.leagueMatches ?? [], m.id, nextMatch),
+                                            });
+                                          }}
+                                        />
+                                      </details>
+                                    </>
+                                  );
+                                })()}
+                              </li>
+                            ))}
+                        </ul>
+                      </div>
+                    ))}
                   </div>
 
                   <div className="mt-6">
@@ -575,10 +578,7 @@ export default function FutbolResumenPage() {
                       onClick={() => {
                         const sA = standingsForGroup("A");
                         const sB = standingsForGroup("B");
-                        const playoffsRounds = generatePlayoffsFromGroups({
-                          groupAStandings: sA,
-                          groupBStandings: sB,
-                        });
+                        const playoffsRounds = generatePlayoffsFromGroups({ groupAStandings: sA, groupBStandings: sB });
                         persist({ ...draft, stage: "playoffs", playoffsRounds });
                       }}
                     >
@@ -598,10 +598,7 @@ export default function FutbolResumenPage() {
                         ...draft,
                         groups: {
                           ...draft.groups,
-                          A: {
-                            ...draft.groups.A,
-                            matches: updateMatchScoreInMatches(draft.groups.A.matches, matchId, patch),
-                          },
+                          A: { ...draft.groups.A, matches: updateMatchScoreInMatches(draft.groups.A.matches, matchId, patch) },
                         },
                       });
                     }}
@@ -611,10 +608,7 @@ export default function FutbolResumenPage() {
                         ...draft,
                         groups: {
                           ...draft.groups,
-                          A: {
-                            ...draft.groups.A,
-                            matches: replaceMatchInMatches(draft.groups.A.matches, matchId, nextMatch),
-                          },
+                          A: { ...draft.groups.A, matches: replaceMatchInMatches(draft.groups.A.matches, matchId, nextMatch) },
                         },
                       });
                     }}
@@ -632,10 +626,7 @@ export default function FutbolResumenPage() {
                         ...draft,
                         groups: {
                           ...draft.groups,
-                          B: {
-                            ...draft.groups.B,
-                            matches: updateMatchScoreInMatches(draft.groups.B.matches, matchId, patch),
-                          },
+                          B: { ...draft.groups.B, matches: updateMatchScoreInMatches(draft.groups.B.matches, matchId, patch) },
                         },
                       });
                     }}
@@ -645,10 +636,7 @@ export default function FutbolResumenPage() {
                         ...draft,
                         groups: {
                           ...draft.groups,
-                          B: {
-                            ...draft.groups.B,
-                            matches: replaceMatchInMatches(draft.groups.B.matches, matchId, nextMatch),
-                          },
+                          B: { ...draft.groups.B, matches: replaceMatchInMatches(draft.groups.B.matches, matchId, nextMatch) },
                         },
                       });
                     }}
@@ -680,22 +668,18 @@ export default function FutbolResumenPage() {
                               resolved.home !== "BYE" &&
                               resolved.away !== "BYE";
 
-                            const isTie =
-                              m.homeScore != null &&
-                              m.awayScore != null &&
-                              m.homeScore === m.awayScore;
+                            const isTie = m.homeScore != null && m.awayScore != null && m.homeScore === m.awayScore;
 
                             return (
-                              <li key={m.id} className="flex flex-col gap-2 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+                              <li
+                                key={m.id}
+                                className="flex flex-col gap-2 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800"
+                              >
                                 <div className="flex flex-wrap items-center justify-between gap-2">
                                   <span className="font-medium">
                                     {resolved.home} vs {resolved.away}
                                   </span>
-                                  {!playable && (
-                                    <span className="text-xs text-zinc-500">
-                                      (Esperando resultados previos)
-                                    </span>
-                                  )}
+                                  {!playable && <span className="text-xs text-zinc-500">(Esperando resultados previos)</span>}
                                 </div>
 
                                 <div className="flex flex-wrap items-center gap-2">
@@ -712,7 +696,6 @@ export default function FutbolResumenPage() {
                                         away: resolved.away,
                                       });
 
-                                      // if final has a winner, mark finished
                                       const f = nextRounds.find((x) => x.name === "Final")?.matches?.[0];
                                       const done = f && matchWinner(f) ? "finished" : draft.stage;
                                       persist({ ...draft, stage: done, playoffsRounds: nextRounds });
@@ -736,11 +719,7 @@ export default function FutbolResumenPage() {
                                       persist({ ...draft, stage: done, playoffsRounds: nextRounds });
                                     }}
                                   />
-                                  {isTie && (
-                                    <span className="text-xs text-amber-700 dark:text-amber-300">
-                                      Empate: definí un ganador
-                                    </span>
-                                  )}
+                                  {isTie && <span className="text-xs text-amber-700 dark:text-amber-300">Empate: definí un ganador</span>}
                                 </div>
 
                                 <details>
@@ -751,7 +730,6 @@ export default function FutbolResumenPage() {
                                     match={m}
                                     teams={draft.teams}
                                     onChange={(nextMatch) => {
-                                      // Rebuild the target match fully.
                                       const rebuilt = (draft.playoffsRounds ?? []).map((r0) => ({
                                         ...r0,
                                         matches: replaceMatchInMatches(r0.matches, m.id, nextMatch),
@@ -774,115 +752,18 @@ export default function FutbolResumenPage() {
               )}
             </div>
           )}
-
-          {/* ---------------- LIGA -> GRUPOS -> PLAYOFFS (legacy: starting directly in groups via sorteo) ---------------- */}
-          {draft.format === "liga_grupos_playoffs" && ligaGPStage === "groups" && !draft.leagueMatches && draft.groups?.A && draft.groups?.B && (
-            <div className="mt-4 space-y-8">
-              <section className="space-y-6">
-                <div>
-                  <div className="font-semibold">Fase 2 — Grupos (sorteados)</div>
-                  <div className="text-sm text-zinc-600 dark:text-zinc-400">
-                    Se jugará liga dentro de cada grupo. Clasifican los 4 mejores de cada uno.
-                  </div>
-                </div>
-
-                <GroupBlock
-                  title="Grupo A"
-                  groupKey="A"
-                  matches={draft.groups.A.matches}
-                  standings={standingsForGroup("A")}
-                  teams={draft.teams}
-                  onChangeScore={(matchId, patch) => {
-                    if (!draft.groups) return;
-                    persist({
-                      ...draft,
-                      stage: "groups",
-                      groups: {
-                        ...draft.groups,
-                        A: {
-                          ...draft.groups.A,
-                          matches: updateMatchScoreInMatches(draft.groups.A.matches, matchId, patch),
-                        },
-                      },
-                    });
-                  }}
-                  onChangeMatch={(matchId, nextMatch) => {
-                    if (!draft.groups) return;
-                    persist({
-                      ...draft,
-                      stage: "groups",
-                      groups: {
-                        ...draft.groups,
-                        A: {
-                          ...draft.groups.A,
-                          matches: replaceMatchInMatches(draft.groups.A.matches, matchId, nextMatch),
-                        },
-                      },
-                    });
-                  }}
-                />
-
-                <GroupBlock
-                  title="Grupo B"
-                  groupKey="B"
-                  matches={draft.groups.B.matches}
-                  standings={standingsForGroup("B")}
-                  teams={draft.teams}
-                  onChangeScore={(matchId, patch) => {
-                    if (!draft.groups) return;
-                    persist({
-                      ...draft,
-                      stage: "groups",
-                      groups: {
-                        ...draft.groups,
-                        B: {
-                          ...draft.groups.B,
-                          matches: updateMatchScoreInMatches(draft.groups.B.matches, matchId, patch),
-                        },
-                      },
-                    });
-                  }}
-                  onChangeMatch={(matchId, nextMatch) => {
-                    if (!draft.groups) return;
-                    persist({
-                      ...draft,
-                      stage: "groups",
-                      groups: {
-                        ...draft.groups,
-                        B: {
-                          ...draft.groups.B,
-                          matches: replaceMatchInMatches(draft.groups.B.matches, matchId, nextMatch),
-                        },
-                      },
-                    });
-                  }}
-                />
-              </section>
-            </div>
-          )}
-        </FutbolCard>
+        </VoleyCard>
       </div>
 
       {standingsModalOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Tabla completa"
-        >
-          <button
-            className="absolute inset-0 bg-black/50"
-            onClick={() => setStandingsModalOpen(false)}
-            aria-label="Cerrar"
-          />
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label="Tabla completa">
+          <button className="absolute inset-0 bg-black/50" onClick={() => setStandingsModalOpen(false)} aria-label="Cerrar" />
 
           <div className="relative w-full max-w-4xl rounded-2xl border border-zinc-200 bg-white p-4 shadow-xl dark:border-white/10 dark:bg-zinc-950">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="text-lg font-extrabold tracking-tight">Tabla completa</div>
-                <div className="text-xs text-zinc-500 dark:text-white/60">
-                  Orden: Pts → DG → GF.
-                </div>
+                <div className="text-xs text-zinc-500 dark:text-white/60">Orden: Pts → DG → GF.</div>
               </div>
 
               <button
@@ -901,12 +782,6 @@ export default function FutbolResumenPage() {
                 <StandingsTable rows={leagueStandings} />
               ) : draft.format === "liga_grupos_playoffs" ? (
                 <div className="space-y-6">
-                  {/*
-                    IMPORTANT: For liga_grupos_playoffs we only show ONE stage at a time.
-                    - stage=league  => league table
-                    - stage=groups  => group tables
-                    - stage=playoffs/finished => no standings table (playoffs are bracket-based)
-                  */}
                   {ligaGPStage === "league" && draft.leagueMatches && (
                     <div>
                       <div className="text-sm font-extrabold">Fase 1 — Liga (tabla general)</div>
@@ -928,9 +803,7 @@ export default function FutbolResumenPage() {
                   )}
 
                   {(ligaGPStage === "playoffs" || ligaGPStage === "finished") && (
-                    <div className="text-sm text-zinc-600 dark:text-white/70">
-                      En Playoffs no hay tabla.
-                    </div>
+                    <div className="text-sm text-zinc-600 dark:text-white/70">En Playoffs no hay tabla.</div>
                   )}
                 </div>
               ) : (
@@ -944,7 +817,7 @@ export default function FutbolResumenPage() {
       <div className="mt-8 flex flex-col gap-3 sm:flex-row">
         <button
           className="rounded-xl border border-white/60 bg-white/70 px-4 py-2.5 text-sm font-semibold shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/5"
-          onClick={() => router.push("/futbol/formato")}
+          onClick={() => router.push("/voley/formato")}
         >
           ← Cambiar formato
         </button>
@@ -956,7 +829,7 @@ export default function FutbolResumenPage() {
           Finalizar (volver al inicio)
         </button>
       </div>
-    </FutbolShell>
+    </VoleyShell>
   );
 }
 
@@ -1062,9 +935,7 @@ function GroupBlock(props: {
                                 props.onChangeScore(m.id, { awayScore: Number.isNaN(n) ? null : n });
                               }}
                             />
-                            {hasGoalEvents && (
-                              <span className="text-xs text-zinc-500 dark:text-white/60">(Marcador desde goles)</span>
-                            )}
+                            {hasGoalEvents && <span className="text-xs text-zinc-500 dark:text-white/60">(Marcador desde goles)</span>}
                           </div>
 
                           <details className="mt-2">

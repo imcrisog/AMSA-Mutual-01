@@ -46,7 +46,7 @@ export function addCardEvent(params: {
   match: Match;
   minute: number;
   teamSide: MatchEventTeamSide;
-  card: "yellow" | "red";
+  card: "yellow" | "red" | "blue";
   player: { id: string; name: string };
 }): Match {
   const ev: CardEvent = {

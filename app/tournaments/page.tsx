@@ -66,6 +66,13 @@ export default function TournamentsPage() {
           >
             + Nuevo torneo (Fútbol)
           </button>
+
+          <button
+            className="rounded-xl border border-zinc-200 bg-white px-4 py-2.5 text-sm font-extrabold tracking-wide text-zinc-900 shadow-sm dark:border-zinc-800 dark:bg-zinc-950 dark:text-white"
+            onClick={() => router.push("/voley/nuevo")}
+          >
+            + Nuevo torneo (Vóley)
+          </button>
         </div>
 
         <div className="mt-8 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-black">

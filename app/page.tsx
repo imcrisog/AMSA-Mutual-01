@@ -37,12 +37,12 @@ export default function Home() {
           </Link>
 
           <Link
-            href="/voley"
+            href="/voley/nuevo"
             className="rounded-xl border border-zinc-200 p-6 transition hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-900"
           >
             <div className="text-xl font-semibold">🏐 Vóley</div>
             <div className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-              Próximamente
+              Crear torneo
             </div>
           </Link>
         </div>

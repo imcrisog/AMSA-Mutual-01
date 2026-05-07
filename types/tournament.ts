@@ -49,7 +49,7 @@ export type GoalEvent = MatchEventBase & {
 };
 
 export type CardEvent = MatchEventBase & {
-  type: "yellow" | "red";
+  type: "yellow" | "red" | "blue";
   playerId: string;
   playerName: string;
 };
@@ -91,7 +91,7 @@ export type StandingsRow = {
 };
 
 export type TournamentDraft = {
-  sport: "futbol";
+  sport: "futbol" | "voley";
   teams: Team[];
   format?: TournamentFormat;
 

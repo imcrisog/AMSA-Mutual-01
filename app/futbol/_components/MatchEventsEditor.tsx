@@ -139,6 +139,24 @@ export default function MatchEventsEditor(props: {
             </button>
             <button
               type="button"
+              className="rounded-xl bg-blue-600 px-3 py-2 text-xs font-bold text-white shadow-sm"
+              onClick={() => {
+                if (!resolvedPlayer) return;
+                props.onChange(
+                  addCardEvent({
+                    match: props.match,
+                    minute: parseMinute(minute),
+                    teamSide: side,
+                    card: "blue",
+                    player: resolvedPlayer,
+                  })
+                );
+              }}
+            >
+              + Azul
+            </button>
+            <button
+              type="button"
               className="rounded-xl bg-red-600 px-3 py-2 text-xs font-bold text-white shadow-sm"
               onClick={() => {
                 if (!resolvedPlayer) return;
@@ -233,9 +251,10 @@ export default function MatchEventsEditor(props: {
                       Gol: <span className="font-medium">{e.playerName}</span>
                     </span>
                   )}
-                  {(e.type === "yellow" || e.type === "red") && (
+                  {(e.type === "yellow" || e.type === "red" || e.type === "blue") && (
                     <span>
-                      {e.type === "yellow" ? "Amarilla" : "Roja"}: <span className="font-medium">{e.playerName}</span>
+                      {e.type === "yellow" ? "Amarilla" : e.type === "red" ? "Roja" : "Azul"}: {" "}
+                      <span className="font-medium">{e.playerName}</span>
                     </span>
                   )}
                   {e.type === "sub" && (
