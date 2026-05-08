@@ -93,15 +93,7 @@ export default function DanielTorneosPage() {
               </p>
             </div>
 
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              <button
-                type="button"
-                className="rounded-2xl bg-white/10 px-5 py-3 text-sm font-semibold ring-1 ring-white/15 backdrop-blur transition hover:bg-white/15"
-                onClick={() => router.push("/")}
-              >
-                Volver al inicio
-              </button>
-            </div>
+
           </div>
 
           <div className="flex flex-col gap-3 rounded-3xl bg-white/5 p-4 ring-1 ring-white/10 backdrop-blur sm:flex-row sm:items-center sm:justify-between">
