@@ -90,7 +90,6 @@ export default function DanielTorneosPage() {
                 Mis torneos
               </h1>
               <p className="mt-3 max-w-2xl text-sm text-white/70 sm:text-base">
-                Galería pública (solo lectura) de los torneos de Daniel. Diseño “neón” y responsive.
               </p>
             </div>
 
@@ -170,7 +169,7 @@ export default function DanielTorneosPage() {
         </section>
 
         <footer className="mt-14 pb-10 text-center text-xs text-white/45">
-          Tablero especial para <span className="font-mono">{TARGET_EMAIL}</span> — responsive (1/2/3 columnas).
+          Tablero especial para <span className="font-mono">{TARGET_EMAIL}</span> - (1/2/3 columnas).
         </footer>
       </div>
     </div>

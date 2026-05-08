@@ -21,7 +21,7 @@ function formatDate(iso: string) {
 function StandingsTable({ rows }: { rows: StandingsRow[] }) {
   if (rows.length === 0) return <div className="text-sm text-white/60">Sin datos.</div>;
   return (
-    <div className="overflow-auto rounded-2xl ring-1 ring-white/10">
+    <div className="w-full min-w-0 max-w-full overscroll-x-contain overflow-x-auto rounded-2xl ring-1 ring-white/10">
       <table className="w-full min-w-[640px] border-collapse text-sm">
         <thead className="bg-white/5 text-left text-xs uppercase tracking-widest text-white/60">
           <tr>
@@ -106,7 +106,7 @@ export default function DanielTorneoDetallePage() {
   }, [data]);
 
   return (
-    <div className="min-h-dvh flex-1 bg-[radial-gradient(1200px_circle_at_20%_0%,rgba(56,189,248,0.25),transparent_55%),radial-gradient(900px_circle_at_90%_20%,rgba(168,85,247,0.25),transparent_55%),radial-gradient(900px_circle_at_10%_90%,rgba(34,197,94,0.2),transparent_60%),linear-gradient(to_bottom,#05070e,#000000)] px-5 py-10 text-white sm:px-8">
+    <div className="min-h-dvh flex-1 overflow-x-hidden bg-[radial-gradient(1200px_circle_at_20%_0%,rgba(56,189,248,0.25),transparent_55%),radial-gradient(900px_circle_at_90%_20%,rgba(168,85,247,0.25),transparent_55%),radial-gradient(900px_circle_at_10%_90%,rgba(34,197,94,0.2),transparent_60%),linear-gradient(to_bottom,#05070e,#000000)] px-5 py-10 text-white sm:px-8">
       <div className="mx-auto w-full max-w-5xl">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
@@ -142,8 +142,8 @@ export default function DanielTorneoDetallePage() {
 
         {data && (
           <div className="mt-10 grid gap-6 lg:grid-cols-3">
-            <section className="lg:col-span-2 space-y-6">
-              <div className="rounded-3xl bg-white/5 p-6 ring-1 ring-white/10">
+            <section className="min-w-0 lg:col-span-2 space-y-6">
+              <div className="min-w-0 rounded-3xl bg-white/5 p-6 ring-1 ring-white/10">
                 <div className="text-xs font-semibold tracking-wide text-white/60">Tabla (resumen)</div>
                 <div className="mt-4">
                   <StandingsTable rows={standings} />
