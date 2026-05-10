@@ -4,7 +4,7 @@ import { ensureMongoIndexes } from "@/lib/server/ensureIndexes";
 import { findUserByEmail } from "@/lib/server/auth";
 import { tournamentsCollection, toTournamentMeta } from "@/lib/server/collections";
 
-const TARGET_EMAIL = "daniel@futbol.com";
+const TARGET_EMAIL = "daniel@test.com";
 
 export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   await ensureMongoIndexes();

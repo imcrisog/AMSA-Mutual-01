@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import type { TournamentMeta } from "@/types/tournament";
 import { apiFetch } from "@/lib/apiClient";
 
-const TARGET_EMAIL = "daniel@futbol.com";
+const TARGET_EMAIL = "daniel@test.com";
 
 function sportBadge(sport: TournamentMeta["sport"]) {
   if (sport === "futbol") {
