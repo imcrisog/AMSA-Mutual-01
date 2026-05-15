@@ -7,7 +7,7 @@ import type { CupRound, Team, TournamentDraft, TournamentFormat } from "@/types/
 import { getActiveTournamentId } from "@/lib/storage";
 import { apiGetDraft, apiGetNistPulse, apiGetTeams, apiSetDraft, apiSetTeams } from "@/lib/tournamentsApi";
 import { mulberry32, seed32FromHex, shuffleInPlace } from "@/lib/shuffle";
-import { generateCupRounds, generateLeagueMatches } from "@/lib/tournament";
+import { generateCupRounds, generateVoleyLeagueMatches } from "@/lib/tournament";
 import { useRequireAuth } from "@/lib/authRequired";
 import VoleyShell from "../_components/VoleyShell";
 import VoleyCard from "../_components/VoleyCard";
@@ -308,11 +308,11 @@ export default function VoleySorteoPage() {
           format,
           randomnessProof: proof,
           stage: "league",
-          leagueMatches: generateLeagueMatches(next),
+          leagueMatches: generateVoleyLeagueMatches(next),
         };
       } else {
         revealPairs = nextNames.map((name, idx) => ({ home: String(idx + 1), away: name }));
-        nextDraft = { sport: "voley", teams: next, format, randomnessProof: proof, leagueMatches: generateLeagueMatches(next) };
+        nextDraft = { sport: "voley", teams: next, format, randomnessProof: proof, leagueMatches: generateVoleyLeagueMatches(next) };
       }
 
       if (revealMode === "all") {

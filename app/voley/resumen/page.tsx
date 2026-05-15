@@ -1,30 +1,43 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import Image from "next/image";
-import type { CupRound, GroupKey, Match, StandingsRow, Team, TournamentDraft } from "@/types/tournament";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+
+import type {
+  CupRound,
+  GroupKey,
+  Match,
+  Team,
+  TournamentDraft,
+  VoleySetScore,
+  VoleyStandingsRow,
+} from "@/types/tournament";
 import { getActiveTournamentId } from "@/lib/storage";
-import { apiGetTeams, apiGetDraft, apiSetDraft } from "@/lib/tournamentsApi";
+import { apiGetDraft, apiGetTeams, apiSetDraft } from "@/lib/tournamentsApi";
 import { useRequireAuth } from "@/lib/authRequired";
 import VoleyShell from "../_components/VoleyShell";
 import VoleyCard from "../_components/VoleyCard";
-import MatchEventsEditor from "../_components/MatchEventsEditor";
 import {
-  allMatchesPlayed,
-  applyAttendanceBonus,
-  computeStandings,
-  generateGroupPhase,
+  allVoleyMatchesPlayed,
+  computeVoleyMatchSummary,
+  computeVoleyStandings,
   generatePlayoffsFromGroups,
+  generateVoleyGroupPhase,
+  makeEmptyVoleySets,
+  patchMatchWithDerivedVoleyScore,
   resolveMatchTeams,
   splitIntoGroupsFromStandings,
 } from "@/lib/tournament";
 
+type DraftState = (TournamentDraft & { __voleySetsMigrated?: boolean }) | null;
+
 export default function VoleyResumenPage() {
   const router = useRouter();
-  const [draft, setDraft] = useState<TournamentDraft | null>(null);
   const { loading } = useRequireAuth();
+
   const [tournamentId, setTournamentId] = useState<string | null>(null);
+  const [draft, setDraft] = useState<DraftState>(null);
   const [standingsModalOpen, setStandingsModalOpen] = useState(false);
 
   useEffect(() => {
@@ -39,14 +52,15 @@ export default function VoleyResumenPage() {
     }
 
     let cancelled = false;
-
     Promise.all([apiGetDraft(tournamentId), apiGetTeams(tournamentId)])
       .then(([d, teams]) => {
         if (cancelled) return;
         Promise.resolve().then(() => {
           if (cancelled) return;
-          if (d) setDraft({ ...d, teams });
-          else setDraft(null);
+          // Soft-migration: older drafts might not have `sets` for volleyball matches.
+          // We initialize empty sets so the UI works and standings are computed from sets.
+          const migrated = d ? migrateDraftToVoleySets({ ...d, teams }) : null;
+          setDraft(migrated);
         });
       })
       .catch((err) => {
@@ -59,17 +73,26 @@ export default function VoleyResumenPage() {
     };
   }, [loading, router, tournamentId]);
 
+  // Persist soft-migrations once per load.
+  useEffect(() => {
+    if (!draft) return;
+    if (!tournamentId) return;
+    if (!draft.__voleySetsMigrated) return;
+    apiSetDraft(tournamentId, stripInternalFlags(draft)).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft?.__voleySetsMigrated, tournamentId]);
+
   useEffect(() => {
     if (!standingsModalOpen) return;
-    function onKeyDown(e: KeyboardEvent) {
+    const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") setStandingsModalOpen(false);
-    }
+    };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [standingsModalOpen]);
 
-  function persist(next: TournamentDraft) {
-    if (tournamentId) apiSetDraft(tournamentId, next).catch(() => {});
+  function persist(next: TournamentDraft & { __voleySetsMigrated?: boolean }) {
+    if (tournamentId) apiSetDraft(tournamentId, stripInternalFlags(next)).catch(() => {});
     setDraft(next);
   }
 
@@ -78,42 +101,57 @@ export default function VoleyResumenPage() {
     if (v === "") return null;
     const n = Number.parseInt(v, 10);
     if (Number.isNaN(n)) return null;
-    if (n < 0) return 0;
-    return n;
+    return Math.max(0, n);
   }
 
-  function updateMatchScoreInMatches(matches: Match[], matchId: string, patch: Partial<Match>): Match[] {
-    return matches.map((m) => (m.id === matchId ? { ...m, ...patch } : m));
+  function ensureMatchHasSets(m: Match): Match {
+    if (m.sets && m.sets.length > 0) return m;
+    return { ...m, sets: makeEmptyVoleySets() };
+  }
+
+  function updateSetScoreInMatch(m: Match, setIndex0: number, patch: Partial<VoleySetScore>): Match {
+    const base = ensureMatchHasSets(m);
+    const sets = [...(base.sets ?? makeEmptyVoleySets())];
+    while (sets.length < 5) sets.push({ home: null, away: null });
+    sets[setIndex0] = { ...sets[setIndex0], ...patch };
+    return patchMatchWithDerivedVoleyScore({ ...base, sets });
   }
 
   function replaceMatchInMatches(matches: Match[], matchId: string, next: Match): Match[] {
     return matches.map((m) => (m.id === matchId ? next : m));
   }
 
-  function updateScoreInRounds(rounds: CupRound[], matchId: string, patch: Partial<Match>): CupRound[] {
+  function updateScoreInRounds(rounds: CupRound[], matchId: string, next: Match): CupRound[] {
     return rounds.map((r) => ({
       ...r,
-      matches: updateMatchScoreInMatches(r.matches, matchId, patch),
+      matches: replaceMatchInMatches(r.matches, matchId, next),
     }));
   }
 
   function matchWinner(m: Match): string | null {
-    if (m.homeScore == null || m.awayScore == null) return null;
-    if (m.homeScore > m.awayScore) return m.home;
-    if (m.awayScore > m.homeScore) return m.away;
+    const p = patchMatchWithDerivedVoleyScore(ensureMatchHasSets(m));
+    if (p.homeScore == null || p.awayScore == null) return null;
+    if (p.homeScore > p.awayScore) return p.home;
+    if (p.awayScore > p.homeScore) return p.away;
     return null;
   }
 
-  function standingsForLeague(): StandingsRow[] {
-    if (!draft?.leagueMatches) return [];
+  const leagueStandings = useMemo(() => {
+    if (!draft || draft.format === "copa" || !draft.leagueMatches) return [] as VoleyStandingsRow[];
     const teamNames = draft.teams.map((t) => t.name);
-    return applyAttendanceBonus(computeStandings(teamNames, draft.leagueMatches), draft.attendanceConfirmed);
-  }
+    const patched = draft.leagueMatches.map((m) => patchMatchWithDerivedVoleyScore(ensureMatchHasSets(m)));
+    const base = computeVoleyStandings(teamNames, patched);
+    if (!draft.attendanceConfirmed) return base;
+    return base.map((r) => ({ ...r, pts: r.pts + (draft.attendanceConfirmed?.[r.team] ? 5 : 0) }));
+  }, [draft]);
 
-  function standingsForGroup(key: GroupKey): StandingsRow[] {
+  function standingsForGroup(key: GroupKey): VoleyStandingsRow[] {
     if (!draft?.groups?.[key]) return [];
     const group = draft.groups[key];
-    return applyAttendanceBonus(computeStandings(group.teams, group.matches), draft.attendanceConfirmed);
+    const patched = group.matches.map((m) => patchMatchWithDerivedVoleyScore(ensureMatchHasSets(m)));
+    const base = computeVoleyStandings(group.teams, patched);
+    if (!draft.attendanceConfirmed) return base;
+    return base.map((r) => ({ ...r, pts: r.pts + (draft.attendanceConfirmed?.[r.team] ? 5 : 0) }));
   }
 
   if (!draft) {
@@ -131,9 +169,9 @@ export default function VoleyResumenPage() {
     );
   }
 
-  const leagueStandings = draft.format !== "copa" ? standingsForLeague() : [];
   const groupsExist = !!draft.groups?.A || !!draft.groups?.B;
 
+  // Normalize stage for liga_grupos_playoffs.
   const ligaGPStage =
     draft.format !== "liga_grupos_playoffs"
       ? null
@@ -144,7 +182,7 @@ export default function VoleyResumenPage() {
     draft.format === "liga_grupos_playoffs" &&
     ligaGPStage === "league" &&
     !!draft.leagueMatches &&
-    allMatchesPlayed(draft.leagueMatches) &&
+    allVoleyMatchesPlayed(draft.leagueMatches.map(ensureMatchHasSets)) &&
     !groupsExist;
 
   const canGeneratePlayoffs =
@@ -152,8 +190,8 @@ export default function VoleyResumenPage() {
     ligaGPStage === "groups" &&
     !!draft.groups?.A &&
     !!draft.groups?.B &&
-    allMatchesPlayed(draft.groups.A.matches) &&
-    allMatchesPlayed(draft.groups.B.matches) &&
+    allVoleyMatchesPlayed(draft.groups.A.matches.map(ensureMatchHasSets)) &&
+    allVoleyMatchesPlayed(draft.groups.B.matches.map(ensureMatchHasSets)) &&
     !draft.playoffsRounds;
 
   const playoffsAllMatches: Match[] = draft.playoffsRounds ? draft.playoffsRounds.flatMap((r) => r.matches) : [];
@@ -252,10 +290,10 @@ export default function VoleyResumenPage() {
 
         <VoleyCard
           title="Estructura"
-          subtitle="Fixture + resultados + tablas."
+          subtitle="Fixture + resultados + tablas (por sets)."
           right={
             <div className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-semibold text-sky-800 shadow-sm dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-200">
-              Matchday
+              Sets
             </div>
           }
         >
@@ -272,88 +310,39 @@ export default function VoleyResumenPage() {
             </div>
           )}
 
+          <div className="mt-3 rounded-xl border border-zinc-200 bg-white/70 p-3 text-xs text-zinc-700 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/5 dark:text-white/70">
+            <span className="font-extrabold">Aclaración:</span> en todos los partidos el <span className="font-semibold">primer equipo</span> es
+            <span className="font-semibold"> Local</span> y el <span className="font-semibold">segundo</span> es <span className="font-semibold">Visitante</span>.
+            En cada set, el <span className="font-semibold">primer casillero</span> es Local y el <span className="font-semibold">segundo</span> Visitante.
+          </div>
+
           {/* ---------------- LIGA SIMPLE ---------------- */}
           {draft.format === "liga" && draft.leagueMatches && (
-            <div className="mt-4 space-y-8">
+            <section className="mt-4 space-y-8">
               <div>
-                <div className="font-semibold">Partidos (cargá resultados)</div>
+                <div className="font-semibold">Partidos (cargá puntos por set)</div>
                 <div className="mt-4 space-y-6">
-                  {Array.from(new Set((draft.leagueMatches ?? []).map((m) => m.round))).map((round) => (
+                  {Array.from(new Set(draft.leagueMatches.map((m) => m.round))).map((round) => (
                     <div key={round}>
                       <div className="font-semibold">Fecha {round}</div>
-                      <ul className="mt-2 space-y-2 text-sm text-zinc-700 dark:text-zinc-300">
+                      <div className="mt-2 space-y-2">
                         {(draft.leagueMatches ?? [])
                           .filter((m) => m.round === round)
                           .map((m) => (
-                            <li
+                            <VoleyMatchCard
                               key={m.id}
-                              className="rounded-xl border border-white/60 bg-white/70 p-3 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/5"
-                            >
-                              {(() => {
-                                const hasGoalEvents = (m.events ?? []).some((e) => e.type === "goal");
-                                return (
-                                  <>
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <span className="min-w-[220px] font-medium">
-                                        {m.home} vs {m.away}
-                                      </span>
-                                      <input
-                                        className="w-16 rounded border border-zinc-300 bg-transparent px-2 py-1 disabled:opacity-50 dark:border-zinc-700"
-                                        inputMode="numeric"
-                                        disabled={hasGoalEvents}
-                                        value={m.homeScore ?? ""}
-                                        onChange={(e) => {
-                                          const next = parseScore(e.target.value);
-                                          persist({
-                                            ...draft,
-                                            leagueMatches: updateMatchScoreInMatches(draft.leagueMatches ?? [], m.id, {
-                                              homeScore: next,
-                                            }),
-                                          });
-                                        }}
-                                      />
-                                      <span>-</span>
-                                      <input
-                                        className="w-16 rounded border border-zinc-300 bg-transparent px-2 py-1 disabled:opacity-50 dark:border-zinc-700"
-                                        inputMode="numeric"
-                                        disabled={hasGoalEvents}
-                                        value={m.awayScore ?? ""}
-                                        onChange={(e) => {
-                                          const next = parseScore(e.target.value);
-                                          persist({
-                                            ...draft,
-                                            leagueMatches: updateMatchScoreInMatches(draft.leagueMatches ?? [], m.id, {
-                                              awayScore: next,
-                                            }),
-                                          });
-                                        }}
-                                      />
-                                      {hasGoalEvents && (
-                                        <span className="text-xs text-zinc-500 dark:text-white/60">(Marcador desde goles)</span>
-                                      )}
-                                    </div>
-
-                                    <details className="mt-2">
-                                      <summary className="cursor-pointer text-xs font-semibold text-zinc-600 dark:text-white/70">
-                                        Eventos (goles, tarjetas, cambios)
-                                      </summary>
-                                      <MatchEventsEditor
-                                        match={m}
-                                        teams={draft.teams}
-                                        onChange={(nextMatch) => {
-                                          persist({
-                                            ...draft,
-                                            leagueMatches: replaceMatchInMatches(draft.leagueMatches ?? [], m.id, nextMatch),
-                                          });
-                                        }}
-                                      />
-                                    </details>
-                                  </>
-                                );
-                              })()}
-                            </li>
+                              match={ensureMatchHasSets(m)}
+                              onChange={(nextMatch) => {
+                                persist({
+                                  ...draft,
+                                  leagueMatches: replaceMatchInMatches(draft.leagueMatches ?? [], m.id, nextMatch),
+                                });
+                              }}
+                              parseScore={parseScore}
+                              updateSetScoreInMatch={updateSetScoreInMatch}
+                            />
                           ))}
-                      </ul>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -361,94 +350,39 @@ export default function VoleyResumenPage() {
 
               <div>
                 <div className="font-semibold">Tabla</div>
-                <StandingsTable rows={leagueStandings} />
+                <VoleyStandingsTable rows={leagueStandings} />
               </div>
-            </div>
+            </section>
           )}
 
           {/* ---------------- COPA ---------------- */}
           {draft.format === "copa" && draft.cupRounds && (
-            <div className="mt-4 space-y-6">
+            <section className="mt-4 space-y-6">
               {draft.cupRounds.map((r) => (
                 <div key={r.round}>
                   <div className="font-semibold">{r.name}</div>
-                  <ul className="mt-2 space-y-2 text-sm text-zinc-700 dark:text-zinc-300">
+                  <div className="mt-2 space-y-2">
                     {r.matches.map((m) => (
-                      <li
+                      <VoleyMatchCard
                         key={m.id}
-                        className="rounded-xl border border-white/60 bg-white/70 p-3 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/5"
-                      >
-                        {(() => {
-                          const hasGoalEvents = (m.events ?? []).some((e) => e.type === "goal");
-                          return (
-                            <>
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="min-w-[220px] font-medium">
-                                  {m.home} vs {m.away}
-                                </span>
-                                <input
-                                  className="w-16 rounded border border-zinc-300 bg-transparent px-2 py-1 disabled:opacity-50 dark:border-zinc-700"
-                                  inputMode="numeric"
-                                  disabled={hasGoalEvents}
-                                  value={m.homeScore ?? ""}
-                                  onChange={(e) => {
-                                    const next = parseScore(e.target.value);
-                                    persist({
-                                      ...draft,
-                                      cupRounds: updateScoreInRounds(draft.cupRounds ?? [], m.id, { homeScore: next }),
-                                    });
-                                  }}
-                                />
-                                <span>-</span>
-                                <input
-                                  className="w-16 rounded border border-zinc-300 bg-transparent px-2 py-1 disabled:opacity-50 dark:border-zinc-700"
-                                  inputMode="numeric"
-                                  disabled={hasGoalEvents}
-                                  value={m.awayScore ?? ""}
-                                  onChange={(e) => {
-                                    const next = parseScore(e.target.value);
-                                    persist({
-                                      ...draft,
-                                      cupRounds: updateScoreInRounds(draft.cupRounds ?? [], m.id, { awayScore: next }),
-                                    });
-                                  }}
-                                />
-                                {hasGoalEvents && (
-                                  <span className="text-xs text-zinc-500 dark:text-white/60">(Marcador desde goles)</span>
-                                )}
-                              </div>
-
-                              <details className="mt-2">
-                                <summary className="cursor-pointer text-xs font-semibold text-zinc-600 dark:text-white/70">
-                                  Eventos (goles, tarjetas, cambios)
-                                </summary>
-                                <MatchEventsEditor
-                                  match={m}
-                                  teams={draft.teams}
-                                  onChange={(nextMatch) => {
-                                    const nextRounds = (draft.cupRounds ?? []).map((round) =>
-                                      round.round !== r.round
-                                        ? round
-                                        : { ...round, matches: replaceMatchInMatches(round.matches, m.id, nextMatch) }
-                                    );
-                                    persist({ ...draft, cupRounds: nextRounds });
-                                  }}
-                                />
-                              </details>
-                            </>
-                          );
-                        })()}
-                      </li>
+                        match={ensureMatchHasSets(m)}
+                        onChange={(nextMatch) => {
+                          const nextRounds = updateScoreInRounds(draft.cupRounds ?? [], m.id, nextMatch);
+                          persist({ ...draft, cupRounds: nextRounds });
+                        }}
+                        parseScore={parseScore}
+                        updateSetScoreInMatch={updateSetScoreInMatch}
+                      />
                     ))}
-                  </ul>
+                  </div>
                 </div>
               ))}
-            </div>
+            </section>
           )}
 
           {/* ---------------- LIGA -> GRUPOS -> PLAYOFFS ---------------- */}
           {draft.format === "liga_grupos_playoffs" && draft.leagueMatches && (
-            <div className="mt-4 space-y-8">
+            <section className="mt-4 space-y-8">
               {ligaGPStage === "league" && (
                 <section>
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -464,9 +398,8 @@ export default function VoleyResumenPage() {
                       disabled={!canGenerateGroups}
                       onClick={() => {
                         if (!draft.leagueMatches) return;
-                        const standings = leagueStandings;
-                        const split = splitIntoGroupsFromStandings(standings);
-                        const groups = generateGroupPhase(split);
+                        const split = splitIntoGroupsFromStandings(leagueStandings);
+                        const groups = generateVoleyGroupPhase(split);
                         persist({ ...draft, stage: "groups", groups });
                       }}
                     >
@@ -475,89 +408,34 @@ export default function VoleyResumenPage() {
                   </div>
 
                   <div className="mt-4 space-y-6">
-                    {Array.from(new Set((draft.leagueMatches ?? []).map((m) => m.round))).map((round) => (
+                    {Array.from(new Set(draft.leagueMatches.map((m) => m.round))).map((round) => (
                       <div key={round}>
                         <div className="font-semibold">Fecha {round}</div>
-                        <ul className="mt-2 space-y-2 text-sm text-zinc-700 dark:text-zinc-300">
+                        <div className="mt-2 space-y-2">
                           {(draft.leagueMatches ?? [])
                             .filter((m) => m.round === round)
                             .map((m) => (
-                              <li
+                              <VoleyMatchCard
                                 key={m.id}
-                                className="rounded-xl border border-white/60 bg-white/70 p-3 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/5"
-                              >
-                                {(() => {
-                                  const hasGoalEvents = (m.events ?? []).some((e) => e.type === "goal");
-                                  return (
-                                    <>
-                                      <div className="flex flex-wrap items-center gap-2">
-                                        <span className="min-w-[220px] font-medium">
-                                          {m.home} vs {m.away}
-                                        </span>
-                                        <input
-                                          className="w-16 rounded border border-zinc-300 bg-transparent px-2 py-1 disabled:opacity-50 dark:border-zinc-700"
-                                          inputMode="numeric"
-                                          disabled={hasGoalEvents}
-                                          value={m.homeScore ?? ""}
-                                          onChange={(e) => {
-                                            const next = parseScore(e.target.value);
-                                            persist({
-                                              ...draft,
-                                              leagueMatches: updateMatchScoreInMatches(draft.leagueMatches ?? [], m.id, {
-                                                homeScore: next,
-                                              }),
-                                            });
-                                          }}
-                                        />
-                                        <span>-</span>
-                                        <input
-                                          className="w-16 rounded border border-zinc-300 bg-transparent px-2 py-1 disabled:opacity-50 dark:border-zinc-700"
-                                          inputMode="numeric"
-                                          disabled={hasGoalEvents}
-                                          value={m.awayScore ?? ""}
-                                          onChange={(e) => {
-                                            const next = parseScore(e.target.value);
-                                            persist({
-                                              ...draft,
-                                              leagueMatches: updateMatchScoreInMatches(draft.leagueMatches ?? [], m.id, {
-                                                awayScore: next,
-                                              }),
-                                            });
-                                          }}
-                                        />
-                                        {hasGoalEvents && (
-                                          <span className="text-xs text-zinc-500 dark:text-white/60">(Marcador desde goles)</span>
-                                        )}
-                                      </div>
-
-                                      <details className="mt-2">
-                                        <summary className="cursor-pointer text-xs font-semibold text-zinc-600 dark:text-white/70">
-                                          Eventos (goles, tarjetas, cambios)
-                                        </summary>
-                                        <MatchEventsEditor
-                                          match={m}
-                                          teams={draft.teams}
-                                          onChange={(nextMatch) => {
-                                            persist({
-                                              ...draft,
-                                              leagueMatches: replaceMatchInMatches(draft.leagueMatches ?? [], m.id, nextMatch),
-                                            });
-                                          }}
-                                        />
-                                      </details>
-                                    </>
-                                  );
-                                })()}
-                              </li>
+                                match={ensureMatchHasSets(m)}
+                                onChange={(nextMatch) => {
+                                  persist({
+                                    ...draft,
+                                    leagueMatches: replaceMatchInMatches(draft.leagueMatches ?? [], m.id, nextMatch),
+                                  });
+                                }}
+                                parseScore={parseScore}
+                                updateSetScoreInMatch={updateSetScoreInMatch}
+                              />
                             ))}
-                        </ul>
+                        </div>
                       </div>
                     ))}
                   </div>
 
                   <div className="mt-6">
                     <div className="font-semibold">Tabla general</div>
-                    <StandingsTable rows={leagueStandings} />
+                    <VoleyStandingsTable rows={leagueStandings} />
                   </div>
                 </section>
               )}
@@ -591,17 +469,6 @@ export default function VoleyResumenPage() {
                     groupKey="A"
                     matches={draft.groups.A.matches}
                     standings={standingsForGroup("A")}
-                    teams={draft.teams}
-                    onChangeScore={(matchId, patch) => {
-                      if (!draft.groups) return;
-                      persist({
-                        ...draft,
-                        groups: {
-                          ...draft.groups,
-                          A: { ...draft.groups.A, matches: updateMatchScoreInMatches(draft.groups.A.matches, matchId, patch) },
-                        },
-                      });
-                    }}
                     onChangeMatch={(matchId, nextMatch) => {
                       if (!draft.groups) return;
                       persist({
@@ -612,6 +479,8 @@ export default function VoleyResumenPage() {
                         },
                       });
                     }}
+                    parseScore={parseScore}
+                    updateSetScoreInMatch={updateSetScoreInMatch}
                   />
 
                   <GroupBlock
@@ -619,17 +488,6 @@ export default function VoleyResumenPage() {
                     groupKey="B"
                     matches={draft.groups.B.matches}
                     standings={standingsForGroup("B")}
-                    teams={draft.teams}
-                    onChangeScore={(matchId, patch) => {
-                      if (!draft.groups) return;
-                      persist({
-                        ...draft,
-                        groups: {
-                          ...draft.groups,
-                          B: { ...draft.groups.B, matches: updateMatchScoreInMatches(draft.groups.B.matches, matchId, patch) },
-                        },
-                      });
-                    }}
                     onChangeMatch={(matchId, nextMatch) => {
                       if (!draft.groups) return;
                       persist({
@@ -640,6 +498,8 @@ export default function VoleyResumenPage() {
                         },
                       });
                     }}
+                    parseScore={parseScore}
+                    updateSetScoreInMatch={updateSetScoreInMatch}
                   />
                 </section>
               )}
@@ -648,16 +508,14 @@ export default function VoleyResumenPage() {
                 <section className="space-y-4">
                   <div>
                     <div className="font-semibold">Fase 3 — Playoffs</div>
-                    <div className="text-sm text-zinc-600 dark:text-zinc-400">
-                      En playoffs no se permiten empates (cargá un resultado con ganador).
-                    </div>
+                    <div className="text-sm text-zinc-600 dark:text-zinc-400">En playoffs no hay empates: se define por sets.</div>
                   </div>
 
                   <div className="space-y-6">
                     {draft.playoffsRounds.map((r) => (
                       <div key={r.round}>
                         <div className="font-semibold">{r.name}</div>
-                        <ul className="mt-2 space-y-2 text-sm text-zinc-700 dark:text-zinc-300">
+                        <div className="mt-2 space-y-2">
                           {r.matches.map((m) => {
                             const resolved = resolveMatchTeams(m, playoffsById);
                             const playable =
@@ -668,89 +526,41 @@ export default function VoleyResumenPage() {
                               resolved.home !== "BYE" &&
                               resolved.away !== "BYE";
 
-                            const isTie = m.homeScore != null && m.awayScore != null && m.homeScore === m.awayScore;
-
+                            const withTeams = { ...m, home: resolved.home, away: resolved.away };
                             return (
-                              <li
+                              <div
                                 key={m.id}
-                                className="flex flex-col gap-2 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800"
+                                className="rounded-xl border border-white/60 bg-white/70 p-3 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/5"
                               >
-                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                  <span className="font-medium">
+                                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                  <div className="font-medium">
                                     {resolved.home} vs {resolved.away}
-                                  </span>
-                                  {!playable && <span className="text-xs text-zinc-500">(Esperando resultados previos)</span>}
+                                  </div>
+                                  {!playable && <div className="text-xs text-zinc-500">(Esperando resultados previos)</div>}
                                 </div>
 
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <input
-                                    className="w-16 rounded border border-zinc-300 bg-transparent px-2 py-1 disabled:opacity-50 dark:border-zinc-700"
-                                    inputMode="numeric"
-                                    disabled={!playable}
-                                    value={m.homeScore ?? ""}
-                                    onChange={(e) => {
-                                      const next = parseScore(e.target.value);
-                                      const nextRounds = updateScoreInRounds(draft.playoffsRounds ?? [], m.id, {
-                                        homeScore: next,
-                                        home: resolved.home,
-                                        away: resolved.away,
-                                      });
-
-                                      const f = nextRounds.find((x) => x.name === "Final")?.matches?.[0];
-                                      const done = f && matchWinner(f) ? "finished" : draft.stage;
-                                      persist({ ...draft, stage: done, playoffsRounds: nextRounds });
-                                    }}
-                                  />
-                                  <span>-</span>
-                                  <input
-                                    className="w-16 rounded border border-zinc-300 bg-transparent px-2 py-1 disabled:opacity-50 dark:border-zinc-700"
-                                    inputMode="numeric"
-                                    disabled={!playable}
-                                    value={m.awayScore ?? ""}
-                                    onChange={(e) => {
-                                      const next = parseScore(e.target.value);
-                                      const nextRounds = updateScoreInRounds(draft.playoffsRounds ?? [], m.id, {
-                                        awayScore: next,
-                                        home: resolved.home,
-                                        away: resolved.away,
-                                      });
-                                      const f = nextRounds.find((x) => x.name === "Final")?.matches?.[0];
-                                      const done = f && matchWinner(f) ? "finished" : draft.stage;
-                                      persist({ ...draft, stage: done, playoffsRounds: nextRounds });
-                                    }}
-                                  />
-                                  {isTie && <span className="text-xs text-amber-700 dark:text-amber-300">Empate: definí un ganador</span>}
-                                </div>
-
-                                <details>
-                                  <summary className="cursor-pointer text-xs font-semibold text-zinc-600 dark:text-white/70">
-                                    Eventos (goles, tarjetas, cambios)
-                                  </summary>
-                                  <MatchEventsEditor
-                                    match={m}
-                                    teams={draft.teams}
-                                    onChange={(nextMatch) => {
-                                      const rebuilt = (draft.playoffsRounds ?? []).map((r0) => ({
-                                        ...r0,
-                                        matches: replaceMatchInMatches(r0.matches, m.id, nextMatch),
-                                      }));
-
-                                      const f = rebuilt.find((x) => x.name === "Final")?.matches?.[0];
-                                      const done = f && matchWinner(f) ? "finished" : draft.stage;
-                                      persist({ ...draft, stage: done, playoffsRounds: rebuilt });
-                                    }}
-                                  />
-                                </details>
-                              </li>
+                                <VoleySetsEditor
+                                  match={ensureMatchHasSets(withTeams)}
+                                  disabled={!playable}
+                                  parseScore={parseScore}
+                                  updateSetScoreInMatch={updateSetScoreInMatch}
+                                  onChange={(nextMatch) => {
+                                    const nextRounds = updateScoreInRounds(draft.playoffsRounds ?? [], m.id, nextMatch);
+                                    const f = nextRounds.find((x) => x.name === "Final")?.matches?.[0];
+                                    const done = f && matchWinner(f) ? "finished" : draft.stage;
+                                    persist({ ...draft, stage: done, playoffsRounds: nextRounds });
+                                  }}
+                                />
+                              </div>
                             );
                           })}
-                        </ul>
+                        </div>
                       </div>
                     ))}
                   </div>
                 </section>
               )}
-            </div>
+            </section>
           )}
         </VoleyCard>
       </div>
@@ -759,11 +569,11 @@ export default function VoleyResumenPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label="Tabla completa">
           <button className="absolute inset-0 bg-black/50" onClick={() => setStandingsModalOpen(false)} aria-label="Cerrar" />
 
-          <div className="relative w-full max-w-4xl rounded-2xl border border-zinc-200 bg-white p-4 shadow-xl dark:border-white/10 dark:bg-zinc-950">
+          <div className="relative w-full max-w-5xl rounded-2xl border border-zinc-200 bg-white p-4 shadow-xl dark:border-white/10 dark:bg-zinc-950">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="text-lg font-extrabold tracking-tight">Tabla completa</div>
-                <div className="text-xs text-zinc-500 dark:text-white/60">Orden: Pts → DG → GF.</div>
+                <div className="text-xs text-zinc-500 dark:text-white/60">Orden: Pts → Dif. sets → Dif. puntos.</div>
               </div>
 
               <button
@@ -779,13 +589,13 @@ export default function VoleyResumenPage() {
               {draft.format === "copa" ? (
                 <div className="text-sm text-zinc-600 dark:text-white/70">En Copa no hay tabla.</div>
               ) : draft.format === "liga" ? (
-                <StandingsTable rows={leagueStandings} />
+                <VoleyStandingsTable rows={leagueStandings} />
               ) : draft.format === "liga_grupos_playoffs" ? (
                 <div className="space-y-6">
                   {ligaGPStage === "league" && draft.leagueMatches && (
                     <div>
                       <div className="text-sm font-extrabold">Fase 1 — Liga (tabla general)</div>
-                      <StandingsTable rows={leagueStandings} />
+                      <VoleyStandingsTable rows={leagueStandings} />
                     </div>
                   )}
 
@@ -793,11 +603,11 @@ export default function VoleyResumenPage() {
                     <>
                       <div>
                         <div className="text-sm font-extrabold">Fase 2 — Grupo A</div>
-                        <StandingsTable rows={standingsForGroup("A")} />
+                        <VoleyStandingsTable rows={standingsForGroup("A")} />
                       </div>
                       <div>
                         <div className="text-sm font-extrabold">Fase 2 — Grupo B</div>
-                        <StandingsTable rows={standingsForGroup("B")} />
+                        <VoleyStandingsTable rows={standingsForGroup("B")} />
                       </div>
                     </>
                   )}
@@ -833,7 +643,140 @@ export default function VoleyResumenPage() {
   );
 }
 
-function StandingsTable({ rows }: { rows: StandingsRow[] }) {
+function stripInternalFlags(d: TournamentDraft & { __voleySetsMigrated?: boolean }) {
+  // We don't want internal flags in DB.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { __voleySetsMigrated, ...rest } = d;
+  return rest as TournamentDraft;
+}
+
+function migrateDraftToVoleySets(d: TournamentDraft): TournamentDraft & { __voleySetsMigrated?: boolean } {
+  if (d.sport !== "voley") return d;
+
+  let touched = false;
+  const ensure = (m: Match): Match => {
+    if (m.sets && m.sets.length > 0) return m;
+    touched = true;
+    return { ...m, sets: makeEmptyVoleySets(), homeScore: null, awayScore: null };
+  };
+
+  const leagueMatches = d.leagueMatches ? d.leagueMatches.map(ensure) : undefined;
+  const cupRounds = d.cupRounds
+    ? d.cupRounds.map((r) => ({ ...r, matches: r.matches.map(ensure) }))
+    : undefined;
+  const playoffsRounds = d.playoffsRounds
+    ? d.playoffsRounds.map((r) => ({ ...r, matches: r.matches.map(ensure) }))
+    : undefined;
+  const groups = d.groups
+    ? {
+        ...d.groups,
+        A: d.groups.A ? { ...d.groups.A, matches: d.groups.A.matches.map(ensure) } : d.groups.A,
+        B: d.groups.B ? { ...d.groups.B, matches: d.groups.B.matches.map(ensure) } : d.groups.B,
+      }
+    : undefined;
+
+  if (!touched) return d;
+  return { ...d, leagueMatches, cupRounds, playoffsRounds, groups, __voleySetsMigrated: true };
+}
+
+function VoleyMatchCard(props: {
+  match: Match;
+  onChange: (next: Match) => void;
+  parseScore: (raw: string) => number | null;
+  updateSetScoreInMatch: (m: Match, setIndex0: number, patch: Partial<VoleySetScore>) => Match;
+}) {
+  return (
+    <div className="rounded-xl border border-white/60 bg-white/70 p-3 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/5">
+      <div className="mb-2 font-medium">
+        {props.match.home} vs {props.match.away}
+      </div>
+      <VoleySetsEditor
+        match={props.match}
+        parseScore={props.parseScore}
+        updateSetScoreInMatch={props.updateSetScoreInMatch}
+        onChange={props.onChange}
+      />
+    </div>
+  );
+}
+
+function VoleySetsEditor(props: {
+  match: Match;
+  disabled?: boolean;
+  onChange: (next: Match) => void;
+  parseScore: (raw: string) => number | null;
+  updateSetScoreInMatch: (m: Match, setIndex0: number, patch: Partial<VoleySetScore>) => Match;
+}) {
+  const m = props.match;
+  const sets = m.sets ?? makeEmptyVoleySets();
+  const summary = computeVoleyMatchSummary(m);
+
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-5 gap-2">
+        {Array.from({ length: 5 }, (_, i) => (
+          <div key={i} className="rounded-lg border border-zinc-200 bg-white/70 p-2 dark:border-white/10 dark:bg-white/5">
+            <div className="text-[10px] font-extrabold uppercase tracking-widest text-zinc-500 dark:text-white/50">Set {i + 1}</div>
+            <div className="mt-1 flex items-center gap-2">
+              <input
+                className="w-full min-w-0 rounded border border-zinc-300 bg-transparent px-2 py-1 text-sm disabled:opacity-50 dark:border-zinc-700"
+                inputMode="numeric"
+                placeholder="L"
+                aria-label={`Set ${i + 1} - puntos Local (${m.home})`}
+                disabled={props.disabled}
+                value={sets[i]?.home ?? ""}
+                onChange={(e) => {
+                  const next = props.parseScore(e.target.value);
+                  props.onChange(props.updateSetScoreInMatch(m, i, { home: next }));
+                }}
+              />
+              <span className="text-xs text-zinc-400">-</span>
+              <input
+                className="w-full min-w-0 rounded border border-zinc-300 bg-transparent px-2 py-1 text-sm disabled:opacity-50 dark:border-zinc-700"
+                inputMode="numeric"
+                placeholder="V"
+                aria-label={`Set ${i + 1} - puntos Visitante (${m.away})`}
+                disabled={props.disabled}
+                value={sets[i]?.away ?? ""}
+                onChange={(e) => {
+                  const next = props.parseScore(e.target.value);
+                  props.onChange(props.updateSetScoreInMatch(m, i, { away: next }));
+                }}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+        <div className="rounded-full border border-zinc-200 bg-white/70 px-3 py-1 font-semibold text-zinc-700 shadow-sm dark:border-white/10 dark:bg-white/5 dark:text-white/80">
+          Sets: <span className="font-extrabold">{summary.homeSetsWon}</span>-<span className="font-extrabold">{summary.awaySetsWon}</span>
+          <span className="mx-2 text-zinc-400">|</span>
+          Puntos: <span className="font-extrabold">{summary.homePoints}</span>-<span className="font-extrabold">{summary.awayPoints}</span>
+        </div>
+
+        {!summary.finished && (sets.some((s) => s.home != null || s.away != null) ? (
+          <div className="text-xs text-amber-700 dark:text-amber-300">Partido incompleto: falta cerrar sets hasta 3.</div>
+        ) : (
+          <div className="text-xs text-zinc-500 dark:text-white/60">Cargá sets para finalizar el partido.</div>
+        ))}
+      </div>
+
+      {summary.warnings.length > 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
+          <div className="font-bold">Atención</div>
+          <ul className="mt-1 list-disc space-y-1 pl-4">
+            {summary.warnings.slice(0, 3).map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VoleyStandingsTable({ rows }: { rows: VoleyStandingsRow[] }) {
   if (rows.length === 0) {
     return <div className="mt-2 text-sm text-zinc-500">Sin datos todavía.</div>;
   }
@@ -841,20 +784,23 @@ function StandingsTable({ rows }: { rows: StandingsRow[] }) {
   return (
     <div className="mt-2 overflow-auto">
       <div className="mb-2 text-xs font-semibold uppercase tracking-widest text-zinc-500 dark:text-white/50">
-        Prioridad: Puntos (luego DG, GF)
+        Prioridad: Pts → Dif. sets → Dif. puntos
       </div>
-      <table className="w-full min-w-[520px] border-collapse text-sm">
+
+      <table className="w-full min-w-[860px] border-collapse text-sm">
         <thead>
           <tr className="text-left text-zinc-600 dark:text-zinc-400">
             <th className="py-2">Pos</th>
             <th className="py-2">Equipo</th>
             <th className="py-2">PJ</th>
             <th className="py-2">PG</th>
-            <th className="py-2">PE</th>
             <th className="py-2">PP</th>
-            <th className="py-2">GF</th>
-            <th className="py-2">GC</th>
-            <th className="py-2">DG</th>
+            <th className="py-2">SF</th>
+            <th className="py-2">SC</th>
+            <th className="py-2">DS</th>
+            <th className="py-2">PF</th>
+            <th className="py-2">PC</th>
+            <th className="py-2">DP</th>
             <th className="py-2">Pts</th>
           </tr>
         </thead>
@@ -865,11 +811,13 @@ function StandingsTable({ rows }: { rows: StandingsRow[] }) {
               <td className="py-2 font-medium">{r.team}</td>
               <td className="py-2">{r.played}</td>
               <td className="py-2">{r.won}</td>
-              <td className="py-2">{r.drawn}</td>
               <td className="py-2">{r.lost}</td>
-              <td className="py-2">{r.gf}</td>
-              <td className="py-2">{r.ga}</td>
-              <td className="py-2">{r.gd}</td>
+              <td className="py-2">{r.setsFor}</td>
+              <td className="py-2">{r.setsAgainst}</td>
+              <td className="py-2">{r.setsDiff}</td>
+              <td className="py-2">{r.pointsFor}</td>
+              <td className="py-2">{r.pointsAgainst}</td>
+              <td className="py-2">{r.pointsDiff}</td>
               <td className="py-2 font-semibold">{r.pts}</td>
             </tr>
           ))}
@@ -883,10 +831,10 @@ function GroupBlock(props: {
   title: string;
   groupKey: GroupKey;
   matches: Match[];
-  standings: StandingsRow[];
-  teams: Team[];
-  onChangeScore: (matchId: string, patch: Partial<Match>) => void;
+  standings: VoleyStandingsRow[];
   onChangeMatch: (matchId: string, next: Match) => void;
+  parseScore: (raw: string) => number | null;
+  updateSetScoreInMatch: (m: Match, setIndex0: number, patch: Partial<VoleySetScore>) => Match;
 }) {
   return (
     <div className="rounded-xl border border-zinc-200 p-4 dark:border-zinc-800">
@@ -896,71 +844,26 @@ function GroupBlock(props: {
         {Array.from(new Set(props.matches.map((m) => m.round))).map((round) => (
           <div key={`${props.groupKey}_${round}`}>
             <div className="font-semibold text-sm">Fecha {round}</div>
-            <ul className="mt-2 space-y-2 text-sm text-zinc-700 dark:text-zinc-300">
+            <div className="mt-2 space-y-2">
               {props.matches
                 .filter((m) => m.round === round)
                 .map((m) => (
-                  <li
+                  <VoleyMatchCard
                     key={m.id}
-                    className="rounded-xl border border-white/60 bg-white/70 p-3 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/5"
-                  >
-                    {(() => {
-                      const hasGoalEvents = (m.events ?? []).some((e) => e.type === "goal");
-                      return (
-                        <>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="min-w-[220px] font-medium">
-                              {m.home} vs {m.away}
-                            </span>
-                            <input
-                              className="w-16 rounded border border-zinc-300 bg-transparent px-2 py-1 disabled:opacity-50 dark:border-zinc-700"
-                              inputMode="numeric"
-                              disabled={hasGoalEvents}
-                              value={m.homeScore ?? ""}
-                              onChange={(e) => {
-                                const v = e.target.value.trim();
-                                const n = v === "" ? null : Number.parseInt(v, 10);
-                                props.onChangeScore(m.id, { homeScore: Number.isNaN(n) ? null : n });
-                              }}
-                            />
-                            <span>-</span>
-                            <input
-                              className="w-16 rounded border border-zinc-300 bg-transparent px-2 py-1 disabled:opacity-50 dark:border-zinc-700"
-                              inputMode="numeric"
-                              disabled={hasGoalEvents}
-                              value={m.awayScore ?? ""}
-                              onChange={(e) => {
-                                const v = e.target.value.trim();
-                                const n = v === "" ? null : Number.parseInt(v, 10);
-                                props.onChangeScore(m.id, { awayScore: Number.isNaN(n) ? null : n });
-                              }}
-                            />
-                            {hasGoalEvents && <span className="text-xs text-zinc-500 dark:text-white/60">(Marcador desde goles)</span>}
-                          </div>
-
-                          <details className="mt-2">
-                            <summary className="cursor-pointer text-xs font-semibold text-zinc-600 dark:text-white/70">
-                              Eventos (goles, tarjetas, cambios)
-                            </summary>
-                            <MatchEventsEditor
-                              match={m}
-                              teams={props.teams}
-                              onChange={(nextMatch) => props.onChangeMatch(m.id, nextMatch)}
-                            />
-                          </details>
-                        </>
-                      );
-                    })()}
-                  </li>
+                    match={m.sets ? m : { ...m, sets: makeEmptyVoleySets() }}
+                    onChange={(nextMatch) => props.onChangeMatch(m.id, nextMatch)}
+                    parseScore={props.parseScore}
+                    updateSetScoreInMatch={props.updateSetScoreInMatch}
+                  />
                 ))}
-            </ul>
+            </div>
           </div>
         ))}
       </div>
 
       <div className="mt-4">
         <div className="font-semibold text-sm">Tabla</div>
-        <StandingsTable rows={props.standings} />
+        <VoleyStandingsTable rows={props.standings} />
       </div>
     </div>
   );

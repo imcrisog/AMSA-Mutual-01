@@ -29,8 +29,23 @@ export type Match = {
   /** null/undefined => not played yet */
   awayScore?: number | null;
 
+  /**
+   * Vóley: puntos por set (best-of-5).
+   *
+   * - `homeScore/awayScore` se usan como **sets ganados** cuando el partido está finalizado.
+   * - Si `sets` está presente, el marcador de sets se deriva automáticamente desde acá.
+   */
+  sets?: VoleySetScore[];
+
   /** Optional match events (goals/cards/subs) for richer match detail. */
   events?: MatchEvent[];
+};
+
+export type VoleySetScore = {
+  /** Puntos del local en ese set. `null` => set no cargado. */
+  home: number | null;
+  /** Puntos del visitante en ese set. `null` => set no cargado. */
+  away: number | null;
 };
 
 export type MatchEventTeamSide = "home" | "away";
@@ -87,6 +102,25 @@ export type StandingsRow = {
   gf: number;
   ga: number;
   gd: number;
+  pts: number;
+};
+
+export type VoleyStandingsRow = {
+  team: string;
+  played: number;
+  won: number;
+  lost: number;
+  /** sets a favor */
+  setsFor: number;
+  /** sets en contra */
+  setsAgainst: number;
+  setsDiff: number;
+  /** puntos a favor (suma de todos los sets) */
+  pointsFor: number;
+  /** puntos en contra (suma de todos los sets) */
+  pointsAgainst: number;
+  pointsDiff: number;
+  /** puntos de partido (3/2/1/0) */
   pts: number;
 };
 
